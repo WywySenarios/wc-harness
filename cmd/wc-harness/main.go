@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/WywySenarios/wc-fuse-client/client"
 	"github.com/WywySenarios/wc-harness/src/agent"
 	"github.com/WywySenarios/wc-harness/src/config"
 	"github.com/WywySenarios/wc-harness/src/llm"
@@ -27,6 +28,9 @@ func run() int {
 	envPath := flag.String("env", ".env", "dotenv file with WC_LLM_* settings")
 	toolsDir := flag.String("tools", "tools", "staged tool tree (binaries + manifests/)")
 	maxTurns := flag.Int("max-turns", 10, "maximum model turns before aborting")
+	fuseSocket := flag.String("fuse-socket", "", "wc-fuse control socket; enables a FUSE workspace when set")
+	fuseProject := flag.String("fuse-project", "", "host project root to mount through wc-fuse")
+	sessionID := flag.String("session", "", "session id reported to wc-fuse (default: hostname)")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "usage: %s [flags] [workspace]\n\n", filepath.Base(os.Args[0]))
 		fmt.Fprintln(flag.CommandLine.Output(), "Runs the task in <workspace>/PROMPT.md. The workspace defaults to the current directory.")
@@ -47,6 +51,10 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "wc-harness: -max-turns must be at least 1")
 		return 2
 	}
+	if *fuseSocket != "" && *fuseProject == "" {
+		fmt.Fprintln(os.Stderr, "wc-harness: -fuse-project is required with -fuse-socket")
+		return 2
+	}
 
 	absWorkspace, err := filepath.Abs(workspace)
 	if err != nil {
@@ -63,6 +71,29 @@ func run() int {
 	if prompt == "" {
 		fmt.Fprintln(os.Stderr, "wc-harness: PROMPT.md is empty")
 		return 1
+	}
+
+	if *fuseSocket != "" {
+		session := *sessionID
+		if session == "" {
+			session, _ = os.Hostname()
+			if session == "" {
+				session = "wc-harness"
+			}
+		}
+		fuse := client.New(*fuseSocket, nil)
+		mountPoint, err := fuse.Mount(session, *fuseProject)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "wc-harness: mount workspace: %v\n", err)
+			return 1
+		}
+		defer func() {
+			if err := fuse.Unmount(*fuseProject); err != nil {
+				fmt.Fprintf(os.Stderr, "wc-harness: unmount workspace: %v\n", err)
+			}
+		}()
+		absWorkspace = mountPoint
+		fmt.Fprintf(os.Stderr, "==> fuse mount=%s project=%s session=%s\n", mountPoint, *fuseProject, session)
 	}
 
 	cfg, err := config.Load(*envPath)
