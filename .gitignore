@@ -1,0 +1,7 @@
+.env
+/wc-harness
+/tools/
+*.test
+*.out
+/go.work
+/go.work.sum
