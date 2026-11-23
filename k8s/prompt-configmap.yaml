@@ -1,8 +1,0 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: wc-prompt
-  namespace: wc
-data:
-  PROMPT.md: |
-    Use the bash tool to write the output of `hostname` followed by the UTC timestamp into /workspace/job.txt, then reply DONE.
