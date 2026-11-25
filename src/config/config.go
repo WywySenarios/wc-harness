@@ -20,6 +20,12 @@ type Config struct {
 
 var requiredKeys = []string{"WC_LLM_BASE_URL", "WC_LLM_MODEL", "WC_LLM_API_KEY"}
 
+var (
+	ErrMissingKeys    = errors.New("missing required key(s)")
+	ErrInvalidBaseURL = errors.New("WC_LLM_BASE_URL must be an absolute http(s) URL")
+	ErrInvalidDotenv  = errors.New("invalid dotenv")
+)
+
 // Load the configuration.
 func Load(path string) (Config, error) {
 	fileValues, err := parseFile(path)
@@ -44,7 +50,7 @@ func Load(path string) (Config, error) {
 		}
 	}
 	if len(missing) > 0 {
-		return Config{}, fmt.Errorf("missing required key(s): %s (checked %s and the environment)", strings.Join(missing, ", "), path)
+		return Config{}, fmt.Errorf("%w: %s (checked %s and the environment)", ErrMissingKeys, strings.Join(missing, ", "), path)
 	}
 
 	baseURL := strings.TrimRight(get("WC_LLM_BASE_URL"), "/")
@@ -52,7 +58,7 @@ func Load(path string) (Config, error) {
 	baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return Config{}, errors.New("WC_LLM_BASE_URL must be an absolute http(s) URL")
+		return Config{}, ErrInvalidBaseURL
 	}
 
 	return Config{
@@ -70,7 +76,8 @@ func parseFile(path string) (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read dotenv: %w", err)
 	}
-	defer file.Close()
+	// Best effort: the file is read completely before it is closed.
+	defer func() { _ = file.Close() }()
 
 	values := make(map[string]string)
 	scanner := bufio.NewScanner(file)
@@ -85,11 +92,11 @@ func parseFile(path string) (map[string]string, error) {
 
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
-			return nil, fmt.Errorf("%s:%d: expected KEY=VALUE", path, lineNo)
+			return nil, fmt.Errorf("%w: %s:%d: expected KEY=VALUE", ErrInvalidDotenv, path, lineNo)
 		}
 		key = strings.TrimSpace(key)
 		if key == "" || strings.ContainsAny(key, " \t") {
-			return nil, fmt.Errorf("%s:%d: invalid key", path, lineNo)
+			return nil, fmt.Errorf("%w: %s:%d: invalid key", ErrInvalidDotenv, path, lineNo)
 		}
 		value = strings.TrimSpace(value)
 		if len(value) >= 2 {

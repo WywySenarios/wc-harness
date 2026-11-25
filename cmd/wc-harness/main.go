@@ -16,12 +16,20 @@ import (
 	"github.com/WywySenarios/wc-fuse-client/client"
 	"github.com/WywySenarios/wc-harness/src/agent"
 	"github.com/WywySenarios/wc-harness/src/config"
+	"github.com/WywySenarios/wc-harness/src/events"
 	"github.com/WywySenarios/wc-harness/src/llm"
 	"github.com/WywySenarios/wc-harness/src/tools"
 )
 
 func main() {
 	os.Exit(run())
+}
+
+// stderr writes a diagnostic to the process error stream.
+func stderr(format string, args ...any) {
+	if _, err := fmt.Fprintf(os.Stderr, format, args...); err != nil {
+		panic(fmt.Sprintf("write stderr: %v", err))
+	}
 }
 
 func run() int {
@@ -31,15 +39,16 @@ func run() int {
 	fuseSocket := flag.String("fuse-socket", "", "wc-fuse control socket; enables a FUSE workspace when set")
 	fuseProject := flag.String("fuse-project", "", "host project root to mount through wc-fuse")
 	sessionID := flag.String("session", "", "session id reported to wc-fuse (default: hostname)")
+	eventsMode := flag.String("events", "text", "event output: text or jsonl")
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "usage: %s [flags] [workspace]\n\n", filepath.Base(os.Args[0]))
-		fmt.Fprintln(flag.CommandLine.Output(), "Runs the task in <workspace>/PROMPT.md. The workspace defaults to the current directory.")
+		stderr("usage: %s [flags] [workspace]\n\n", filepath.Base(os.Args[0]))
+		stderr("Runs the task in <workspace>/PROMPT.md. The workspace defaults to the current directory.\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
 
 	if flag.NArg() > 1 {
-		fmt.Fprintln(os.Stderr, "wc-harness: expected at most one workspace argument")
+		stderr("wc-harness: expected at most one workspace argument\n")
 		flag.Usage()
 		return 2
 	}
@@ -48,70 +57,87 @@ func run() int {
 		workspace = flag.Arg(0)
 	}
 	if *maxTurns < 1 {
-		fmt.Fprintln(os.Stderr, "wc-harness: -max-turns must be at least 1")
+		stderr("wc-harness: -max-turns must be at least 1\n")
 		return 2
 	}
 	if *fuseSocket != "" && *fuseProject == "" {
-		fmt.Fprintln(os.Stderr, "wc-harness: -fuse-project is required with -fuse-socket")
+		stderr("wc-harness: -fuse-project is required with -fuse-socket\n")
+		return 2
+	}
+	if *eventsMode != "text" && *eventsMode != "jsonl" {
+		stderr("wc-harness: -events must be text or jsonl\n")
 		return 2
 	}
 
+	session := *sessionID
+	if session == "" {
+		hostname, err := os.Hostname()
+		if err == nil {
+			session = hostname
+		}
+		if session == "" {
+			session = "wc-harness"
+		}
+	}
+
+	emitter := events.New(*eventsMode, os.Stdout, os.Stderr)
+
 	absWorkspace, err := filepath.Abs(workspace)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "wc-harness: resolve workspace: %v\n", err)
+		emitter.Error(fmt.Sprintf("resolve workspace: %v", err))
+		emitter.SessionEnd(false)
 		return 1
 	}
 
 	promptData, err := os.ReadFile(filepath.Join(absWorkspace, "PROMPT.md"))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "wc-harness: read PROMPT.md: %v\n", err)
+		emitter.Error(fmt.Sprintf("read PROMPT.md: %v", err))
+		emitter.SessionEnd(false)
 		return 1
 	}
 	prompt := strings.TrimSpace(string(promptData))
 	if prompt == "" {
-		fmt.Fprintln(os.Stderr, "wc-harness: PROMPT.md is empty")
+		emitter.Error("PROMPT.md is empty")
+		emitter.SessionEnd(false)
 		return 1
 	}
 
 	if *fuseSocket != "" {
-		session := *sessionID
-		if session == "" {
-			session, _ = os.Hostname()
-			if session == "" {
-				session = "wc-harness"
-			}
-		}
 		fuse := client.New(*fuseSocket, nil)
 		mountPoint, err := fuse.Mount(session, *fuseProject)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "wc-harness: mount workspace: %v\n", err)
+			emitter.Error(fmt.Sprintf("mount workspace: %v", err))
+			emitter.SessionEnd(false)
 			return 1
 		}
 		defer func() {
 			if err := fuse.Unmount(*fuseProject); err != nil {
-				fmt.Fprintf(os.Stderr, "wc-harness: unmount workspace: %v\n", err)
+				stderr("wc-harness: unmount workspace: %v\n", err)
 			}
 		}()
 		absWorkspace = mountPoint
-		fmt.Fprintf(os.Stderr, "==> fuse mount=%s project=%s session=%s\n", mountPoint, *fuseProject, session)
+		stderr("==> fuse mount=%s project=%s session=%s\n", mountPoint, *fuseProject, session)
 	}
 
 	cfg, err := config.Load(*envPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "wc-harness: %v\n", err)
+		emitter.Error(err.Error())
+		emitter.SessionEnd(false)
 		return 1
 	}
+	emitter.SessionStart(session, cfg.Model)
 
 	registry, err := tools.Load(*toolsDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "wc-harness: %v\n", err)
+		emitter.Error(err.Error())
+		emitter.SessionEnd(false)
 		return 1
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	fmt.Fprintf(os.Stderr, "==> model=%s workspace=%s tools=%d\n", cfg.Model, absWorkspace, registry.Len())
+	stderr("==> model=%s workspace=%s tools=%d\n", cfg.Model, absWorkspace, registry.Len())
 
 	runner := &agent.Agent{
 		Client: &llm.Client{
@@ -125,14 +151,18 @@ func run() int {
 		MaxTurns:  *maxTurns,
 		Out:       os.Stdout,
 		Log:       os.Stderr,
+		Events:    emitter,
 	}
 	if err := runner.Run(ctx, prompt); err != nil {
 		if errors.Is(err, context.Canceled) {
-			fmt.Fprintln(os.Stderr, "wc-harness: interrupted")
+			emitter.Error("interrupted")
+			emitter.SessionEnd(false)
 			return 130
 		}
-		fmt.Fprintf(os.Stderr, "wc-harness: %v\n", err)
+		emitter.Error(err.Error())
+		emitter.SessionEnd(false)
 		return 1
 	}
+	emitter.SessionEnd(true)
 	return 0
 }

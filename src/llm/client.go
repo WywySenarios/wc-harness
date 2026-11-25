@@ -60,6 +60,19 @@ type Client struct {
 	HTTP            *http.Client
 }
 
+// APIError is an error response from the upstream endpoint.
+type APIError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	if e.StatusCode == 0 {
+		return "upstream error: " + e.Message
+	}
+	return fmt.Sprintf("upstream %d: %s", e.StatusCode, e.Message)
+}
+
 type request struct {
 	Model           string    `json:"model"`
 	Messages        []Message `json:"messages"`
@@ -120,11 +133,15 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, o
 	if err != nil {
 		return Message{}, fmt.Errorf("call upstream: %w", err)
 	}
-	defer resp.Body.Close()
+	// Best effort: the body is closed after it has been read.
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-		return Message{}, fmt.Errorf("upstream %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+		snippet, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		if readErr != nil {
+			return Message{}, fmt.Errorf("read upstream error body: %w", readErr)
+		}
+		return Message{}, &APIError{StatusCode: resp.StatusCode, Message: strings.TrimSpace(string(snippet))}
 	}
 
 	assistant := Message{Role: "assistant"}
@@ -152,7 +169,7 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, o
 			return Message{}, fmt.Errorf("decode stream event: %w", err)
 		}
 		if event.Error != nil {
-			return Message{}, fmt.Errorf("upstream error: %s", event.Error.Message)
+			return Message{}, &APIError{Message: event.Error.Message}
 		}
 
 		for _, choice := range event.Choices {

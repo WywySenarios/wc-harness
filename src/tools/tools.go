@@ -21,6 +21,12 @@ import (
 
 const maxCapture = 64 << 10
 
+var (
+	ErrInvalidManifest  = errors.New("invalid tool manifest")
+	ErrNoTools          = errors.New("no tool manifests found")
+	ErrInvalidArguments = errors.New("tool arguments must be a JSON object")
+)
+
 // Tool is one manifest-backed executable.
 type Tool struct {
 	Name        string
@@ -80,16 +86,16 @@ func Load(dir string) (*Registry, error) {
 
 		name := strings.TrimSuffix(entry.Name(), ".yaml")
 		if spec.Name != name {
-			return nil, fmt.Errorf("%s: manifest name is %q, expected %q", path, spec.Name, name)
+			return nil, fmt.Errorf("%w: %s: manifest name is %q, expected %q", ErrInvalidManifest, path, spec.Name, name)
 		}
 		if strings.ContainsAny(name, `/\`) || name == ".." || name == "." {
-			return nil, fmt.Errorf("%s: invalid tool name %q", path, name)
+			return nil, fmt.Errorf("%w: %s: invalid tool name %q", ErrInvalidManifest, path, name)
 		}
 		if spec.ArgvSchema == nil {
-			return nil, fmt.Errorf("%s: argv_schema is required", path)
+			return nil, fmt.Errorf("%w: %s: argv_schema is required", ErrInvalidManifest, path)
 		}
 		if kind, _ := spec.ArgvSchema["type"].(string); kind != "object" {
-			return nil, fmt.Errorf("%s: argv_schema.type must be 'object'", path)
+			return nil, fmt.Errorf("%w: %s: argv_schema.type must be 'object'", ErrInvalidManifest, path)
 		}
 		parameters, err := json.Marshal(spec.ArgvSchema)
 		if err != nil {
@@ -102,7 +108,7 @@ func Load(dir string) (*Registry, error) {
 			return nil, fmt.Errorf("%s declares %s, which is not staged: %w", path, name, err)
 		}
 		if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-			return nil, fmt.Errorf("%s is not an executable file", executable)
+			return nil, fmt.Errorf("%w: %s is not an executable file", ErrInvalidManifest, executable)
 		}
 
 		description := spec.Description
@@ -119,7 +125,7 @@ func Load(dir string) (*Registry, error) {
 	}
 
 	if len(registry.tools) == 0 {
-		return nil, fmt.Errorf("%s: no tool manifests found", manifestDir)
+		return nil, fmt.Errorf("%w: %s", ErrNoTools, manifestDir)
 	}
 	return registry, nil
 }
@@ -155,7 +161,7 @@ func (r *Registry) Schemas() []llm.Tool {
 func (t Tool) Run(ctx context.Context, dir, argsJSON string) (Result, error) {
 	trimmed := strings.TrimSpace(argsJSON)
 	if trimmed == "" || trimmed[0] != '{' || !json.Valid([]byte(trimmed)) {
-		return Result{}, errors.New("tool arguments must be a JSON object")
+		return Result{}, ErrInvalidArguments
 	}
 
 	cmd := exec.CommandContext(ctx, t.Path, trimmed)
