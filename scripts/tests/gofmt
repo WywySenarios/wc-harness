@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Verifies all Go source is gofmt -s clean. Fails closed when the toolchain is missing.
+
+set -euo pipefail
+
+REPO_ROOT="$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../..")"
+cd "$REPO_ROOT"
+
+if ! command -v gofmt >/dev/null 2>&1; then
+	echo "gofmt: go toolchain required (install go 1.24 or newer) — failing closed" >&2
+	exit 1
+fi
+
+echo "==> gofmt -s -l"
+unformatted="$(gofmt -s -l .)"
+if [ -n "$unformatted" ]; then
+	echo "gofmt: the following files are not formatted:" >&2
+	echo "$unformatted" >&2
+	exit 1
+fi
+echo "    ok: all Go source is gofmt -s clean"

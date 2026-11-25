@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Verifies every shipped shell script parses.
+
+set -euo pipefail
+
+REPO_ROOT="$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../..")"
+cd "$REPO_ROOT"
+
+echo "==> bash -n"
+for script in scripts/tests/*; do
+	[ -f "$script" ] || continue
+	head -1 "$script" | grep -q '^#!/bin/bash\|^#!/usr/bin/env bash' || continue
+	bash -n "$script"
+done
+echo "    ok: all shell scripts parse"

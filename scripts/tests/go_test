@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Runs the Go tests with the race detector. Fails closed when the toolchain is
+# missing.
+
+set -euo pipefail
+
+REPO_ROOT="$(readlink -f "$(dirname "${BASH_SOURCE[0]}")/../..")"
+cd "$REPO_ROOT"
+
+if ! command -v go >/dev/null 2>&1; then
+	echo "go_test: go toolchain required (install go 1.24 or newer) — failing closed" >&2
+	exit 1
+fi
+
+echo "==> go test -race ./..."
+go test -race ./...
+echo "    ok: go test -race ./..."
